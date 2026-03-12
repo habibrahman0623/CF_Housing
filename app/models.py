@@ -38,6 +38,10 @@ class MonthlyBill(Base):
     is_fined = Column(Boolean, default=False) # জরিমানা আছে কি না
     fine_amount = Column(Float, default=0.0)  # জরিমানার পরিমাণ
     fine_paid_amount = Column(Float, default=0.0) # জরিমানা কত টাকা পরিশোধ হয়েছে
+
+    is_fined_waived = Column(Boolean, default=False)
+    fine_waive_reason = Column(String, nullable=True) # কেন মওকুফ করা হলো
+    fine_waived_at = Column(DateTime, nullable=True) # কখন মওকুফ করা হলো
     due_date = Column(DateTime) # এই তারিখের পর জরিমানা শুরু হবে
     is_paid = Column(Boolean, default=False)
     status = Column(String, default="Unpaid") # Unpaid, Partial, Paid
@@ -59,6 +63,10 @@ class SpecialBill(Base):
     is_fined = Column(Boolean, default=False)
     fine_amount = Column(Float, default=0.0)
     fine_paid_amount = Column(Float, default=0.0)
+
+    is_fined_waived = Column(Boolean, default=False)
+    fine_waive_reason = Column(String, nullable=True) # কেন মওকুফ করা হলো
+    fine_waived_at = Column(DateTime, nullable=True) # কখন মওকুফ করা হলো
     due_date = Column(DateTime) # এই তারিখের পর জরিমানা শুরু হবে
     is_paid = Column(Boolean, default=False)
     status = Column(String, default="Unpaid")
@@ -77,3 +85,39 @@ class Payment(Base):
     note = Column(String, nullable=True)
 
     member = relationship("Member")    
+
+from sqlalchemy import Column, Integer, String, Float, Date, DateTime, ForeignKey, Boolean
+from sqlalchemy.orm import relationship
+from .database import Base
+from datetime import datetime
+
+class Asset(Base):
+    __tablename__ = "assets"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    # Categories: Land, Building, Equipment, Vehicle, Other
+    category = Column(String, nullable=False) 
+    purchase_date = Column(Date, nullable=False)
+    purchase_amount = Column(Float, nullable=False)
+    funding_source = Column(String) # General Fund, Member Donation, etc.
+    description = Column(String)
+    document_path = Column(String, nullable=True) # ফাইলের লোকেশন
+
+    # Depreciation লজিক
+    # Methods: "Straight-Line", "None"
+    depreciation_method = Column(String, default="None")
+    useful_life_years = Column(Integer, default=0) # আয়ুষ্কাল
+    salvage_value = Column(Float, default=0.0) # ভগ্নাবশেষ মূল্য
+    
+    # Financial Status
+    current_book_value = Column(Float)
+    is_disposed = Column(Boolean, default=False) # বিক্রি বা নষ্ট হয়েছে কিনা
+    disposal_date = Column(Date, nullable=True)
+    disposal_amount = Column(Float, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    # Expenses-এর সাথে লিঙ্ক (পরবর্তীতে ব্যবহারের জন্য)
+    #expenses = relationship("Expense", back_populates="asset")    
+

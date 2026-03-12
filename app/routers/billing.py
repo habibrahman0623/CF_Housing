@@ -14,35 +14,49 @@ router = APIRouter(prefix="/billing", tags=["Billing & Dues"])
 def generate_monthly_contribution(request: schemas.MonthlyBillRequest, db: Session = Depends(get_db)):
     active_members = db.query(models.Member).filter(models.Member.status == "Active").all()
     
-    # এই মাস ও বছরের জন্য আগে থেকেই যাদের বিল আছে তাদের আইডি সংগ্রহ করা
-    existing_member_ids = [
-        row[0] for row in db.query(models.MonthlyBill.member_id).filter(
-            models.MonthlyBill.billing_period == request.billing_period
-        ).all()
-    ]
-
-    new_bills = []
     y, m = map(int, request.billing_period.split("-"))
     due_dt = request.due_date or datetime(y, m, 15, 23, 59)
+
+    new_bills = []
     for member in active_members:
-        # যদি এই মেম্বারের বিল আগে থেকে না থাকে (Single বা অন্যভাবে), তবেই লিস্টে যোগ করো
-        if member.id not in existing_member_ids:
-            amount = member.share_count * request.rate_per_share
+        # ডুপ্লিকেট চেক
+        existing = db.query(models.MonthlyBill).filter(
+            models.MonthlyBill.member_id == member.id,
+            models.MonthlyBill.billing_period == request.billing_period
+        ).first()
+
+        if not existing:
+            bill_amount = member.share_count * request.rate_per_share
+            paid_from_advance = 0.0
+            status = "Unpaid"
+            is_paid = False
+
+            # --- অটো-অ্যাডজাস্টমেন্ট লজিক ---
+            if member.advance_balance > 0:
+                if member.advance_balance >= bill_amount:
+                    paid_from_advance = bill_amount
+                    member.advance_balance -= bill_amount
+                    status = "Paid"
+                    is_paid = True
+                else:
+                    paid_from_advance = member.advance_balance
+                    member.advance_balance = 0
+                    status = "Partial"
+            # ---------------------------
+
             new_bills.append(models.MonthlyBill(
                 member_id=member.id,
                 billing_period=request.billing_period,
-                amount=amount,
+                amount=bill_amount,
+                paid_amount=paid_from_advance,
                 due_date=due_dt,
-                is_paid=False
+                is_paid=is_paid,
+                status=status
             ))
     
-    if not new_bills:
-        return {"message": "All active members already have bills for this period. No new bills created."}
-
     db.add_all(new_bills)
     db.commit()
-    return {"message": f"Successfully generated bills for {len(new_bills)} members. (Skipped: {len(existing_member_ids)})"}
-
+    return {"message": f"Generated {len(new_bills)} bills with auto-adjustment from advance balance."}
 
 
 @router.delete("/cancel-monthly-bill/{bill_id}")
@@ -66,35 +80,46 @@ def cancel_monthly_bill(bill_id: int, db: Session = Depends(get_db)):
 def generate_special_charge(request: schemas.SpecialChargeRequest, db: Session = Depends(get_db)):
     active_members = db.query(models.Member).filter(models.Member.status == "Active").all()
     
-    # ওই নির্দিষ্ট বিলের নামে ইতিমধ্যে যাদের বিল জেনারেট হয়েছে তাদের আইডি সংগ্রহ
-    existing_member_ids = [
-        row[0] for row in db.query(models.SpecialBill.member_id).filter(
-            models.SpecialBill.bill_name == request.bill_name
-        ).all()
-    ]
-
     new_charges = []
     for member in active_members:
-        # যদি এই মেম্বারের এই বিলটি আগে না থেকে থাকে
-        if member.id not in existing_member_ids:
+        existing = db.query(models.SpecialBill).filter(
+            models.SpecialBill.member_id == member.id,
+            models.SpecialBill.bill_name == request.bill_name
+        ).first()
+
+        if not existing:
             final_amount = member.share_count * request.amount if request.is_per_share else request.amount
-            
+            paid_from_advance = 0.0
+            status = "Unpaid"
+            is_paid = False
+
+            # --- অটো-অ্যাডজাস্টমেন্ট লজিক ---
+            if member.advance_balance > 0:
+                if member.advance_balance >= final_amount:
+                    paid_from_advance = final_amount
+                    member.advance_balance -= final_amount
+                    status = "Paid"
+                    is_paid = True
+                else:
+                    paid_from_advance = member.advance_balance
+                    member.advance_balance = 0
+                    status = "Partial"
+            # ---------------------------
+
             new_charges.append(models.SpecialBill(
                 member_id=member.id,
                 bill_name=request.bill_name,
                 description=request.description,
                 amount=final_amount,
+                paid_amount=paid_from_advance,
                 due_date=request.due_date,
-                is_paid=False
+                is_paid=is_paid,
+                status=status
             ))
     
-    if not new_charges:
-        return {"message": "All active members already have this special bill. No new entries created."}
-
     db.add_all(new_charges)
     db.commit()
-    return {"message": f"Successfully applied '{request.bill_name}' to {len(new_charges)} members. (Skipped: {len(existing_member_ids)})"}
-
+    return {"message": f"Special charge '{request.bill_name}' generated and adjusted."}
 
 @router.delete("/cancel-special-bill/{bill_id}")
 def cancel_special_bill(bill_id: int, db: Session = Depends(get_db)):
@@ -136,12 +161,30 @@ def generate_single_monthly_bill(
     # ডিফল্ট ১৫ তারিখ সেট করা যদি ইউজার না দেয়
     y, m = map(int, request.billing_period.split("-"))
     due_dt = request.due_date or datetime(y, m, 15, 23, 59)
+    bill_amount = member.share_count * request.rate_per_share
+    paid_from_advance = 0.0
+    status = "Unpaid"
+    is_paid = False
+
+            # --- অটো-অ্যাডজাস্টমেন্ট লজিক ---
+    if member.advance_balance > 0:
+        if member.advance_balance >= bill_amount:
+            paid_from_advance = bill_amount
+            member.advance_balance -= bill_amount
+            status = "Paid"
+            is_paid = True
+        else:
+            paid_from_advance = member.advance_balance
+            member.advance_balance = 0
+            status = "Partial"
     new_bill = models.MonthlyBill(
-      member_id=member.id,
-            billing_period=request.billing_period,
-            amount=member.share_count * request.rate_per_share,
-            due_date=due_dt,
-            is_paid=False
+            member_id=member.id,
+                billing_period=request.billing_period,
+                amount=bill_amount,
+                paid_amount=paid_from_advance,
+                due_date=due_dt,
+                is_paid=is_paid,
+                status=status
     )
     db.add(new_bill)
     db.commit()
@@ -166,17 +209,32 @@ def generate_single_special_charge(
     if existing:
         raise HTTPException(status_code=400, detail="Special bill already exists for this person")
     # লজিক: মেম্বারের শেয়ার অনুযায়ী নাকি সরাসরি ফিক্সড অ্যামাউন্ট?
-    final_amount = request.amount
-    if request.is_per_share:
-        final_amount = member.share_count * request.amount
+    final_amount = member.share_count * request.amount if request.is_per_share else request.amount
+    paid_from_advance = 0.0
+    status = "Unpaid"
+    is_paid = False
+
+    # --- অটো-অ্যাডজাস্টমেন্ট লজিক ---
+    if member.advance_balance > 0:
+        if member.advance_balance >= final_amount:
+            paid_from_advance = final_amount
+            member.advance_balance -= final_amount
+            status = "Paid"
+            is_paid = True
+        else:
+            paid_from_advance = member.advance_balance
+            member.advance_balance = 0
+            status = "Partial"
 
     new_charge = models.SpecialBill(
         member_id=member.id,
-        bill_name=request.bill_name,
-        description=request.description,
-        amount=final_amount,
-        due_date=request.due_date,
-        is_paid=False
+                bill_name=request.bill_name,
+                description=request.description,
+                amount=final_amount,
+                paid_amount=paid_from_advance,
+                due_date=request.due_date,
+                is_paid=is_paid,
+                status=status
     )
     db.add(new_charge)
     db.commit()
