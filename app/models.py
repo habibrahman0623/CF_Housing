@@ -121,3 +121,77 @@ class Asset(Base):
     # Expenses-এর সাথে লিঙ্ক (পরবর্তীতে ব্যবহারের জন্য)
     #expenses = relationship("Expense", back_populates="asset")    
 
+class ExpenseCategory(Base):
+    __tablename__ = "expense_categories"
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, unique=True, nullable=False) # যেমন: মেইনটেন্যান্স, স্যালারি, ইউটিলিটি
+
+from datetime import datetime, timezone
+
+class Expense(Base):
+    __tablename__ = "expenses"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    category_id = Column(Integer, ForeignKey("expense_categories.id"), nullable=False)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
+    amount = Column(Float, nullable=False)
+    
+    # deprecation এড়াতে নতুন নিয়ম:
+    expense_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    
+    description = Column(String)
+    voucher_no = Column(String, nullable=True)
+    document_path = Column(String, nullable=True)
+    payment_method = Column(String, default="Cash")
+
+    # Relationships
+    category = relationship("ExpenseCategory")
+    asset = relationship("Asset", back_populates="expenses")
+
+class ExternalLoan(Base):
+    __tablename__ = "external_loans"
+
+    id = Column(Integer, primary_key=True, index=True)
+    lender_name = Column(String, nullable=False) # ব্যাংক বা ব্যক্তির নাম
+    loan_type = Column(String) # Member / Bank / Institution
+    principal_amount = Column(Float, nullable=False) # মূল টাকা (Liability)
+    total_interest_amount = Column(Float, nullable=False) # মোট লাভ (Expense)
+    
+    total_payable = Column(Float) # Principal + Interest
+    remaining_balance = Column(Float) # বকেয়া কত আছে
+    document_path = Column(String, nullable=True)
+
+    status = Column(String, default="Active") # Active, Closed
+    issued_date = Column(Date)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+
+class ExternalLoanSchedule(Base):
+    __tablename__ = "external_loan_schedules"
+
+    id = Column(Integer, primary_key=True, index=True)
+    loan_id = Column(Integer, ForeignKey("external_loans.id"))
+    due_date = Column(Date)
+    principal_component = Column(Float) # এই কিস্তিতে মূল টাকা কত
+    interest_component = Column(Float)  # এই কিস্তিতে লাভ বা খরচ কত
+    total_installment = Column(Float)   # মোট কিস্তির টাকা
+    
+    paid_amount = Column(Float, default=0.0)
+    payment_date = Column(DateTime, nullable=True) # কিস্তি পরিশোধের প্রকৃত তারিখ
+    status = Column(String, default="Pending") # Pending, Paid, Partial    
+
+
+class AssetIncome(Base):
+    __tablename__ = "asset_incomes"
+
+    id = Column(Integer, primary_key=True, index=True)
+    asset_id = Column(Integer, ForeignKey("assets.id"), nullable=False)
+    amount = Column(Float, nullable=False)
+    income_date = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    income_type = Column(String) # যেমন: Rent, Sale, Scrap, Service
+    description = Column(String)
+    received_by = Column(String) # কোন এডমিন রিসিভ করেছেন
+    
+    # ডকুমেন্ট (যেমন বিক্রয় রশিদ বা ভাড়া চুক্তিনামা)
+    document_path = Column(String, nullable=True)
+
+    asset = relationship("Asset")

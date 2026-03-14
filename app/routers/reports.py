@@ -1,13 +1,12 @@
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, extract
 from datetime import datetime
 from app.database import get_db
 from app import models
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, HTTPException
 from typing import Optional
-from datetime import date, datetime, time
-
+from datetime import date, datetime, time, timezone
 
 router = APIRouter(prefix="/reports", tags=["Reports & Dashboard"])
 
@@ -332,3 +331,93 @@ def get_special_collection_summary(bill_name: str, db: Session = Depends(get_db)
         "Success Rate": f"{(total_principal_collection + total_fine_collection) / (total_principal_bill + total_fine_exposed) * 100:.2f}%" if (total_principal_bill + total_fine_exposed) > 0 else "0%"
     }
 
+
+
+
+@router.get("/cash-in-hand")
+def get_cash_in_hand_summary(db: Session = Depends(get_db)):
+    current_year = datetime.now(timezone.utc).year
+
+    # --- হেল্পার ফাংশন: ফিল্টারসহ সামারি বের করার জন্য ---
+    def get_sums(model, amount_col, date_col, filter_year=None):
+        query = db.query(func.sum(amount_col))
+        if filter_year:
+            query = query.filter(extract('year', date_col) == filter_year)
+        return query.scalar() or 0
+
+    # ==========================
+    # CASH IN (আয় ও আমদানী)
+    # ==========================
+    
+    # ১. মাসিক বিল ও জরিমানা
+    m_all = get_sums(models.MonthlyBill, models.MonthlyBill.paid_amount + models.MonthlyBill.fine_paid_amount, models.MonthlyBill.payment_date)
+    m_year = get_sums(models.MonthlyBill, models.MonthlyBill.paid_amount + models.MonthlyBill.fine_paid_amount, models.MonthlyBill.payment_date, current_year)
+    
+    # ২. স্পেশাল বিল ও জরিমানা (নতুন যুক্ত)
+    s_all = get_sums(models.SpecialBill, models.SpecialBill.paid_amount + models.SpecialBill.fine_paid_amount, models.SpecialBill.payment_date)
+    s_year = get_sums(models.SpecialBill, models.SpecialBill.paid_amount + models.SpecialBill.fine_paid_amount, models.SpecialBill.payment_date, current_year)
+
+    # ৩. সম্পদ থেকে আয়
+    a_inc_all = get_sums(models.AssetIncome, models.AssetIncome.amount, models.AssetIncome.income_date)
+    a_inc_year = get_sums(models.AssetIncome, models.AssetIncome.amount, models.AssetIncome.income_date, current_year)
+
+    # ৪. লোন নেওয়া (Principal Amount)
+    loan_all = get_sums(models.ExternalLoan, models.ExternalLoan.principal_amount, models.ExternalLoan.issued_date)
+    loan_year = get_sums(models.ExternalLoan, models.ExternalLoan.principal_amount, models.ExternalLoan.issued_date, current_year)
+
+    # ==========================
+    # CASH OUT (ব্যয় ও বিনিয়োগ)
+    # ==========================
+    
+    # ১. সাধারণ খরচ (Expenses)
+    exp_all = get_sums(models.Expense, models.Expense.amount, models.Expense.expense_date)
+    exp_year = get_sums(models.Expense, models.Expense.amount, models.Expense.expense_date, current_year)
+
+    # ২. সম্পদ কেনা (Asset Purchase - Funding Source: General Fund)
+    # যেহেতু সম্পদে created_at ফিল্ড আছে, সেটি দিয়ে বছর ফিল্টার করছি
+    asset_buy_all = db.query(func.sum(models.Asset.purchase_amount)).filter(models.Asset.funding_source == "General Fund").scalar() or 0
+    asset_buy_year = db.query(func.sum(models.Asset.purchase_amount)).filter(
+        models.Asset.funding_source == "General Fund",
+        extract('year', models.Asset.purchase_date) == current_year # purchase_date অনুযায়ী ফিল্টার
+    ).scalar() or 0
+
+    # ৩. লোনের কিস্তি পরিশোধ (কিস্তির টাকা পরিশোধের সময় ক্যাশ আউট হয়)
+    repay_all = get_sums(models.ExternalLoanSchedule, models.ExternalLoanSchedule.paid_amount, models.ExternalLoanSchedule.due_date)
+    repay_year = get_sums(models.ExternalLoanSchedule, models.ExternalLoanSchedule.paid_amount, models.ExternalLoanSchedule.due_date, current_year)
+
+    # ==========================
+    # চূড়ান্ত ক্যালকুলেশন
+    # ==========================
+    
+    total_in_all = m_all + s_all + a_inc_all + loan_all
+    total_in_year = m_year + s_year + a_inc_year + loan_year
+    
+    total_out_all = exp_all + asset_buy_all + repay_all
+    total_out_year = exp_year + asset_buy_year + repay_year
+
+    return {
+        "current_year": current_year,
+        "lifetime_summary": {
+            "total_cash_in": total_in_all,
+            "total_cash_out": total_out_all,
+            "net_fund_available": total_in_all - total_out_all
+        },
+        "this_year_summary": {
+            "total_cash_in": total_in_year,
+            "total_cash_out": total_out_year,
+            "net_surplus_deficit": total_in_year - total_out_year
+        },
+        "details_this_year": {
+            "income": {
+                "monthly_bills": m_year,
+                "special_bills": s_year,
+                "asset_income": a_inc_year,
+                "loans_received": loan_year
+            },
+            "expense": {
+                "general_expenses": exp_year,
+                "asset_investments": asset_buy_year,
+                "loan_repayments": repay_year
+            }
+        }
+    }
