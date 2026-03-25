@@ -332,10 +332,10 @@ def get_special_collection_summary(bill_name: str, db: Session = Depends(get_db)
     }
 
 
-
+from app.dependencies import get_current_user
 
 @router.get("/cash-in-hand")
-def get_cash_in_hand_summary(db: Session = Depends(get_db)):
+def get_cash_in_hand_summary(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
     current_year = datetime.now(timezone.utc).year
 
     # --- হেল্পার ফাংশন: ফিল্টারসহ সামারি বের করার জন্য ---
@@ -382,8 +382,8 @@ def get_cash_in_hand_summary(db: Session = Depends(get_db)):
     ).scalar() or 0
 
     # ৩. লোনের কিস্তি পরিশোধ (কিস্তির টাকা পরিশোধের সময় ক্যাশ আউট হয়)
-    repay_all = get_sums(models.ExternalLoanSchedule, models.ExternalLoanSchedule.paid_amount, models.ExternalLoanSchedule.due_date)
-    repay_year = get_sums(models.ExternalLoanSchedule, models.ExternalLoanSchedule.paid_amount, models.ExternalLoanSchedule.due_date, current_year)
+    repay_all = get_sums(models.ExternalLoanSchedule, models.ExternalLoanSchedule.paid_amount, models.ExternalLoanSchedule.payment_date)
+    repay_year = get_sums(models.ExternalLoanSchedule, models.ExternalLoanSchedule.paid_amount, models.ExternalLoanSchedule.payment_date, current_year)
 
     # ==========================
     # চূড়ান্ত ক্যালকুলেশন

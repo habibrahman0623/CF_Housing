@@ -63,26 +63,43 @@ async def add_external_loan(
     db.commit()
     return {"message": "Loan, Document and Schedule created successfully", "loan_id": new_loan.id}
 
+from datetime import datetime, timezone
+from typing import Optional
+
 @router.post("/repay-installment/{schedule_id}")
-def repay_loan_installment(schedule_id: int, amount_paid: float, db: Session = Depends(get_db)):
-    schedule = db.query(models.ExternalLoanSchedule).filter(models.ExternalLoanSchedule.id == schedule_id).first()
+def repay_loan_installment(
+    schedule_id: int, 
+    amount_paid: float, 
+    payment_date: Optional[datetime] = None, # এডমিন থেকে ইনপুট
+    db: Session = Depends(get_db)
+):
+    schedule = db.query(models.ExternalLoanSchedule).filter(
+        models.ExternalLoanSchedule.id == schedule_id
+    ).first()
 
     if not schedule or schedule.status == "Paid":
         raise HTTPException(status_code=400, detail="কিস্তিটি পাওয়া যায়নি বা ইতিমধ্যে পরিশোধিত।")
 
-    # লোনের মূল রেকর্ড
     loan = db.query(models.ExternalLoan).filter(models.ExternalLoan.id == schedule.loan_id).first()
 
-    # পার্শিয়াল পেমেন্ট সাপোর্ট করার জন্য লজিক
+    # ১. পেমেন্ট তারিখ নির্ধারণ
+    # যদি এডমিন তারিখ পাঠায় তবে সেটি ব্যবহার হবে, নাহলে বর্তমান সময়
+    if payment_date:
+        schedule.payment_date = payment_date
+    else:
+        schedule.payment_date = datetime.now(timezone.utc)
+
+    # ২. ব্যালেন্স আপডেট
     schedule.paid_amount += amount_paid
     loan.remaining_balance -= amount_paid
 
+    # ৩. স্ট্যাটাস চেক
     if schedule.paid_amount >= schedule.total_installment:
         schedule.status = "Paid"
     else:
         schedule.status = "Partial"
 
-    # চেক করা হচ্ছে আর কোন পেন্ডিং কিস্তি আছে কিনা
+    # ৪. লোন ক্লোজ করার লজিক
     remaining_schedules = db.query(models.ExternalLoanSchedule).filter(
         models.ExternalLoanSchedule.loan_id == loan.id,
         models.ExternalLoanSchedule.status != "Paid"
@@ -92,7 +109,11 @@ def repay_loan_installment(schedule_id: int, amount_paid: float, db: Session = D
         loan.status = "Closed"
 
     db.commit()
-    return {"message": "পরিশোধ সফল হয়েছে", "new_status": schedule.status}
+    return {
+        "message": "পরিশোধ সফল হয়েছে", 
+        "applied_payment_date": schedule.payment_date,
+        "new_status": schedule.status
+    }
 
 @router.get("/summary/{loan_id}")
 def get_loan_summary(loan_id: int, db: Session = Depends(get_db)):

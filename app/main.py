@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 import app.models as models
 from app.database import engine
-from app.routers import assets, members, billing, payments, reports, expenses, external_loans
+from app.routers import assets, members, billing, payments, reports, expenses, external_loans, auth
 
 print("Main file loaded 🚀")
 
@@ -16,6 +16,7 @@ app.include_router(reports.router)
 app.include_router(assets.router)
 app.include_router(expenses.router)
 app.include_router(external_loans.router)
+app.include_router(auth.router)
 
 @app.get("/")
 def read_root():

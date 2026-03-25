@@ -119,7 +119,7 @@ class Asset(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     # Expenses-এর সাথে লিঙ্ক (পরবর্তীতে ব্যবহারের জন্য)
-    #expenses = relationship("Expense", back_populates="asset")    
+    expenses = relationship("Expense", back_populates="asset")    
 
 class ExpenseCategory(Base):
     __tablename__ = "expense_categories"
@@ -195,3 +195,12 @@ class AssetIncome(Base):
     document_path = Column(String, nullable=True)
 
     asset = relationship("Asset")
+
+
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    hashed_password = Column(String, nullable=False)
+    role = Column(String, default="operator") # roles: admin, operator, viewer
+    is_active = Column(Boolean, default=True)
