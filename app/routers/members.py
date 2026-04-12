@@ -26,6 +26,52 @@ def get_all_members(db: Session = Depends(get_db)):
     return db.query(models.Member).all()
 
 
+@router.get("/members-info")
+def get_members_info(db: Session = Depends(get_db)):
+    # ১. সকল মেম্বার এবং তাদের বিলগুলো সংগ্রহ করা
+    members = db.query(models.Member).filter(models.Member.status == "Active").all()
+    
+    members_info = []
+
+    for member in members:
+        # মান্থলি বিলের বকেয়া হিসাব
+        monthly_bills = db.query(models.MonthlyBill).filter(models.MonthlyBill.member_id == member.id).all()
+        m_principal_due = sum(b.amount - b.paid_amount for b in monthly_bills)
+        m_fine_due = sum(b.fine_amount - b.fine_paid_amount for b in monthly_bills)
+
+        # স্পেশাল বিলের বকেয়া হিসাব
+        special_bills = db.query(models.SpecialBill).filter(models.SpecialBill.member_id == member.id).all()
+        s_principal_due = sum(sb.amount - sb.paid_amount for sb in special_bills)
+        s_fine_due = sum(sb.fine_amount - sb.fine_paid_amount for sb in special_bills)
+
+        # টোটাল বকেয়া
+        total_due = m_principal_due + m_fine_due + s_principal_due + s_fine_due
+
+        
+        members_info.append({
+            "id":member.id,
+            "name": member.name,
+            "member_code": member.member_code,
+            "share_count": member.share_count,
+            "advance_balance": member.advance_balance,
+            "phone":member.phone,
+            "email": member.email,
+            "nid": member.nid,
+            "address": member.address,
+            "status": member.status,
+            "total_fine_charged": member.total_fine_charged,
+            "total_fine_paid": member.total_fine_paid,
+            "total_due": total_due
+        })
+
+    # ৩. বকেয়া অনুযায়ী বড় থেকে ছোট ক্রমানুসারে সাজানো (যাদের বকেয়া বেশি তারা আগে আসবে)
+    members_info = sorted(members_info, key=lambda x: x["total_due"], reverse=True)
+
+    return {
+        "total_members": len(members_info),
+        "data": members_info
+    }
+
 @router.get("/dropdown-list")
 def get_member_dropdown(db: Session = Depends(get_db)):
     # শুধু ID, Name এবং Member_Code সিলেক্ট করা হচ্ছে

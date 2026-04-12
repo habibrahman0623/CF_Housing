@@ -59,9 +59,31 @@ def generate_monthly_contribution(request: schemas.MonthlyBillRequest, db: Sessi
     return {"message": f"Generated {len(new_bills)} bills with auto-adjustment from advance balance."}
 
 
-@router.delete("/cancel-monthly-bill/{bill_id}")
-def cancel_monthly_bill(bill_id: int, db: Session = Depends(get_db)):
-    bill = db.query(models.MonthlyBill).filter(models.MonthlyBill.id == bill_id).first()
+# @router.delete("/cancel-monthly-bill/{bill_id}")
+# def cancel_monthly_bill(bill_id: int, db: Session = Depends(get_db)):
+#     bill = db.query(models.MonthlyBill).filter(models.MonthlyBill.id == bill_id).first()
+    
+#     if not bill:
+#         raise HTTPException(status_code=404, detail="Bill not found")
+    
+#     # নিরাপত্তা চেক: বিল যদি অলরেডি পেইড হয়ে যায়, তবে ডিলিট করা যাবে না
+#     if bill.is_paid:
+#         raise HTTPException(status_code=400, detail="Cannot cancel a bill that is already paid!")
+
+#     db.delete(bill)
+#     db.commit()
+#     return {"message": "Bill has been successfully cancelled and removed."}
+
+@router.delete("/cancel-monthly-bill")
+def cancel_monthly_bill(request: schemas.CancelBill, db: Session = Depends(get_db)):
+    member = db.query(models.Member).filter(models.Member.member_code == request.member_code).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found.")
+
+    bill = db.query(models.MonthlyBill).filter(
+        models.MonthlyBill.member_id == member.id,
+        models.MonthlyBill.billing_period == request.billing_period
+    ).first()
     
     if not bill:
         raise HTTPException(status_code=404, detail="Bill not found")
@@ -73,7 +95,6 @@ def cancel_monthly_bill(bill_id: int, db: Session = Depends(get_db)):
     db.delete(bill)
     db.commit()
     return {"message": "Bill has been successfully cancelled and removed."}
-
 
 # --- ২. স্মার্ট স্পেশাল চার্জ জেনারেটর (Bulk) ---
 @router.post("/generate-special-charge")
@@ -121,9 +142,16 @@ def generate_special_charge(request: schemas.SpecialChargeRequest, db: Session =
     db.commit()
     return {"message": f"Special charge '{request.bill_name}' generated and adjusted."}
 
-@router.delete("/cancel-special-bill/{bill_id}")
-def cancel_special_bill(bill_id: int, db: Session = Depends(get_db)):
-    bill = db.query(models.SpecialBill).filter(models.SpecialBill.id == bill_id).first()
+@router.delete("/cancel-special-bill")
+def cancel_special_bill(request: schemas.CancelBill, db: Session = Depends(get_db)):
+    member = db.query(models.Member).filter(models.Member.member_code == request.member_code).first()
+    if not member:
+        raise HTTPException(status_code=404, detail="Member not found.")
+
+    bill = db.query(models.SpecialBill).filter(
+        models.SpecialBill.member_id == member.id,
+        models.SpecialBill.bill_name == request.bill_name
+    ).first()
     
     if not bill:
         raise HTTPException(status_code=404, detail="Special Bill not found")
@@ -134,7 +162,7 @@ def cancel_special_bill(bill_id: int, db: Session = Depends(get_db)):
 
     db.delete(bill)
     db.commit()
-    return {"message": f"Special bill '{bill.bill_name}' has been successfully cancelled."}
+    return {"message": f"Special bill '{bill.bill_name}' has been successfully cancelled for {member.name}({member.member_code})."}
 
 
 # ১. Single Monthly Bill
@@ -272,10 +300,10 @@ def get_special_bills(
 
 # মান্থলি বিলের জন্য বাল্ক জরিমানা (ডাবল প্রিভেনশনসহ)
 @router.post("/apply-bulk-fine-monthly")
-def apply_bulk_fine_monthly(billing_period: str, fine_amount: float, db: Session = Depends(get_db)):
+def apply_bulk_fine_monthly(request: schemas.MonthlyFineRequest, db: Session = Depends(get_db)):
     # শুধুমাত্র সেই বিলগুলো ফিল্টার করা হচ্ছে যেগুলোর ওপর এখনো জরিমানা ধার্য হয়নি
     bills_to_fine = db.query(models.MonthlyBill).filter(
-        models.MonthlyBill.billing_period == billing_period,
+        models.MonthlyBill.billing_period == request.billing_period,
         models.MonthlyBill.status != "Paid",
         models.MonthlyBill.is_fined == False  # ডাবল জরিমানা প্রতিরোধ
     ).all()
@@ -285,11 +313,11 @@ def apply_bulk_fine_monthly(billing_period: str, fine_amount: float, db: Session
 
     for bill in bills_to_fine:
         bill.is_fined = True
-        bill.fine_amount = fine_amount
-        bill.member.total_fine_charged += fine_amount
+        bill.fine_amount = request.fine_amount
+        bill.member.total_fine_charged += request.fine_amount
 
     db.commit()
-    return {"message": f"Success: Fine of {fine_amount} applied to {len(bills_to_fine)} members."}
+    return {"message": f"Success: Fine of {request.fine_amount} applied to {len(bills_to_fine)} members."}
 
 # @router.post("/waive-fine-monthly")
 # def waive_fine_monthly(member_code: str, billing_period: str, db: Session = Depends(get_db)):
@@ -351,12 +379,13 @@ def waive_fine_monthly(request: schemas.WaiverRequest, db: Session = Depends(get
     return {"message": f"Fine of {unpaid_fine} waived for {member.name}. Reason: {request.reason}"}
 
 @router.post("/apply-bulk-fine-special")
-def apply_bulk_fine_special(bill_name: str, fine_amount: float, db: Session = Depends(get_db)):
+def apply_bulk_fine_special(request:schemas.SpecialFineRequest, db: Session = Depends(get_db)):
     """
     বিলের নাম (যেমন: 'Picnic 2026') ইনপুট দিলে ওই বিলের বিপরীতে যারা টাকা দেয়নি তাদের জরিমানা হবে।
     """
+    
     unpaid_special_bills = db.query(models.SpecialBill).filter(
-        models.SpecialBill.bill_name == bill_name,
+        models.SpecialBill.bill_name == request.bill_name,
         models.SpecialBill.status != "Paid",
         models.SpecialBill.is_fined == False
     ).all()
@@ -366,11 +395,11 @@ def apply_bulk_fine_special(bill_name: str, fine_amount: float, db: Session = De
 
     for s_bill in unpaid_special_bills:
         s_bill.is_fined = True
-        s_bill.fine_amount += fine_amount
-        s_bill.member.total_fine_charged += fine_amount
+        s_bill.fine_amount += request.fine_amount
+        s_bill.member.total_fine_charged += request.fine_amount
 
     db.commit()
-    return {"message": f"Fine applied to {len(unpaid_special_bills)} members for bill: {bill_name}."}
+    return {"message": f"Fine applied to {len(unpaid_special_bills)} members for bill: {request.bill_name}."}
 
 
 # @router.post("/waive-fine-special")
@@ -408,12 +437,12 @@ def waive_fine_special(request: schemas.WaiverRequest, db: Session = Depends(get
     member = db.query(models.Member).filter(models.Member.member_code == request.member_code).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found.")
-
+  
     s_bill = db.query(models.SpecialBill).filter(
         models.SpecialBill.member_id == member.id,
         models.SpecialBill.bill_name == request.bill_name
     ).first()
-
+   
     if not s_bill or not s_bill.is_fined or s_bill.fine_amount <= s_bill.fine_paid_amount:
         raise HTTPException(status_code=400, detail="No unpaid fine found for this special bill.")
 
@@ -426,4 +455,4 @@ def waive_fine_special(request: schemas.WaiverRequest, db: Session = Depends(get
     s_bill.fine_waived_at = datetime.now()
 
     db.commit()
-    return {"message": f"Special fine '{request.bill_name}' waived successfully."}
+    return {"message": f"Special fine of the '{request.bill_name}' for the {member.name} waived successfully."}

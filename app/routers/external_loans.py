@@ -110,7 +110,7 @@ def repay_loan_installment(
 
     db.commit()
     return {
-        "message": "পরিশোধ সফল হয়েছে", 
+        "message": "Loan Payment Successfull", 
         "applied_payment_date": schedule.payment_date,
         "new_status": schedule.status
     }

@@ -84,8 +84,27 @@ class SpecialBillResponse(BaseModel):
         from_attributes = True
 
 
+class MonthlyFineRequest(BaseModel):
+    billing_period: str
+    fine_amount: float
+
+class SpecialFineRequest(BaseModel):
+    bill_name: str
+    fine_amount: float
+    
 class WaiverRequest(BaseModel):
     member_code: str
     billing_period: Optional[str] = None # মান্থলি বিলের জন্য (যেমন: 2026-03)
     bill_name: Optional[str] = None      # স্পেশাল বিলের জন্য
     reason: str                          # অডিট ট্রেইল এর জন্য কারণ বাধ্যতামূলক
+
+
+class CancelBill(BaseModel):
+    member_code: str
+    billing_period: Optional[str] = None # মান্থলি বিলের জন্য (যেমন: 2026-03)
+    bill_name: Optional[str] = None      # স্পেশাল বিলের জন্য
+    reason: str
+
+class CollectPayment(BaseModel):
+    member_id: int
+    cash_received: float

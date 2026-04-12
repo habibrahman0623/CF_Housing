@@ -7,22 +7,22 @@ from datetime import datetime
 router = APIRouter(prefix="/payments", tags=["Payments"])
 
 @router.post("/collect")
-def collect_payment(member_id: int, cash_received: float, db: Session = Depends(get_db)):
-    member = db.query(models.Member).filter(models.Member.id == member_id).first()
+def collect_payment(request: schemas.CollectPayment, db: Session = Depends(get_db)):
+    member = db.query(models.Member).filter(models.Member.id == request.member_id).first()
     if not member:
         raise HTTPException(status_code=404, detail="Member not found")
 
     # মোট এভেলেবল টাকা = আজকের ক্যাশ + আগের জমানো অ্যাডভান্স
-    total_available = cash_received + member.advance_balance
+    total_available = request.cash_received + member.advance_balance
     
     # বকেয়া বিলগুলো সংগ্রহ করা (পুরানো বিল আগে আসবে - FIFO)
     unpaid_monthly = db.query(models.MonthlyBill).filter(
-        models.MonthlyBill.member_id == member_id, 
+        models.MonthlyBill.member_id == request.member_id, 
         models.MonthlyBill.status != "Paid"
     ).order_by(models.MonthlyBill.billing_period).all()
 
     unpaid_special = db.query(models.SpecialBill).filter(
-        models.SpecialBill.member_id == member_id, 
+        models.SpecialBill.member_id == request.member_id, 
         models.SpecialBill.status != "Paid"
     ).all()
 
@@ -92,10 +92,10 @@ def collect_payment(member_id: int, cash_received: float, db: Session = Depends(
     
     # ট্রানজাকশন সেভ করা (মানি রিসিট হিস্ট্রির জন্য)
     new_payment = models.Payment(
-        member_id=member_id,
-        amount_received=cash_received,
+        member_id = request.member_id,
+        amount_received = request.cash_received,
         payment_date=datetime.now(),
-        receipt_no=f"MR-{int(datetime.now().timestamp())}"
+        receipt_no = f"MR-{datetime.now().strftime('%Y%m%d%H%M%S%f')}"
     )
     db.add(new_payment)
     

@@ -149,6 +149,7 @@ def get_defaulter_list(db: Session = Depends(get_db)):
         # ২. শুধুমাত্র যাদের বকেয়া আছে তাদের লিস্টে যোগ করা
         if total_due > 0:
             defaulters.append({
+                "Id": member.id,
                 "Name": member.name,
                 "Member Code": member.member_code,
                 "Monthly Due": m_principal_due,
@@ -164,7 +165,7 @@ def get_defaulter_list(db: Session = Depends(get_db)):
     return {
         "total_defaulters": len(defaulters),
         "total_outstanding_amount": sum(d["Total Due"] for d in defaulters),
-        "data": defaulters
+        "defaulters": defaulters
     }
 
 @router.get("/defaulter-list-by-month")
