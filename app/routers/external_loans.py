@@ -1,3 +1,4 @@
+from pathlib import Path
 import shutil
 import os
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
@@ -14,57 +15,78 @@ router = APIRouter(prefix="/external-loans", tags=["Liability & Loans"])
 LOAN_DOC_DIR = "uploads/loan_documents"
 os.makedirs(LOAN_DOC_DIR, exist_ok=True)
 
+from datetime import datetime, timezone
+from typing import Optional
+
 @router.post("/add-loan")
 async def add_external_loan(
     lender_name: str = Form(...),
     principal: float = Form(...),
     total_interest: float = Form(...),
     issued_date: date = Form(...),
-    # কিস্তিগুলো স্ট্রিং হিসেবে আসবে, পরে আমরা এটাকে লিস্টে রূপান্তর করব
     installments_json: str = Form(...), 
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
+    # ১. ফাইল হ্যান্ডলিং (এটি ডাটাবেজ ট্রানজ্যাকশনের বাইরে রাখা ভালো)
     file_path = None
+    clean_path = None
     if file:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         file_path = os.path.join(LOAN_DOC_DIR, f"loan_{timestamp}_{file.filename}")
+        clean_path = Path(file_path).as_posix()
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
-    # লোন মাস্টার রেকর্ড তৈরি
-    new_loan = models.ExternalLoan(
-        lender_name=lender_name,
-        principal_amount=principal,
-        total_interest_amount=total_interest,
-        total_payable=principal + total_interest,
-        remaining_balance=principal + total_interest,
-        issued_date=issued_date,
-        document_path=file_path, 
-        status="Active"
-    )
-    db.add(new_loan)
-    db.commit()
-    db.refresh(new_loan)
-
-    # কিস্তির JSON ডেটা প্রসেস করা
-    installments = json.loads(installments_json)
-    for ins in installments:
-        schedule = models.ExternalLoanSchedule(
-            loan_id=new_loan.id,
-            due_date=ins['due_date'],
-            principal_component=ins['principal_amount'],
-            interest_component=ins['interest_amount'],
-            total_installment=ins['principal_amount'] + ins['interest_amount'],
-            status="Pending"
+    try:
+        # ২. লোন মাস্টার রেকর্ড তৈরি (এখানে আমরা db.commit করছি না)
+        new_loan = models.ExternalLoan(
+            lender_name=lender_name,
+            principal_amount=principal,
+            total_interest_amount=total_interest,
+            total_payable=principal + total_interest,
+            remaining_balance=principal + total_interest,
+            issued_date=issued_date,
+            document_path=clean_path, 
+            status="Active"
         )
-        db.add(schedule)
-    
-    db.commit()
-    return {"message": "Loan, Document and Schedule created successfully", "loan_id": new_loan.id}
+        db.add(new_loan)
+        
+        # flush() ব্যবহার করলে আইডি জেনারেট হয় কিন্তু ডাটাবেজে স্থায়ীভাবে সেভ হয় না
+        db.flush() 
 
-from datetime import datetime, timezone
-from typing import Optional
+        # ৩. কিস্তির JSON ডেটা প্রসেস করা
+        installments = json.loads(installments_json)
+        for ins in installments:
+            # তারিখ কনভার্ট করা (আগের এরর সলিউশন অনুযায়ী)
+            due_date_obj = datetime.strptime(ins['due_date'], "%Y-%m-%d").date()
+            
+            schedule = models.ExternalLoanSchedule(
+                loan_id=new_loan.id, # flush এর কারণে এখানে আইডি পাওয়া যাবে
+                due_date=due_date_obj,
+                principal_component=ins['principal_amount'],
+                interest_component=ins['interest_amount'],
+                total_installment=ins['principal_amount'] + ins['interest_amount'],
+                status="Pending"
+            )
+            db.add(schedule)
+        
+        # ৪. সবকিছু ঠিক থাকলে এখন ফাইনাল সেভ করুন
+        db.commit()
+        db.refresh(new_loan)
+        
+        return {"message": "Loan and Schedule created successfully", "loan_id": new_loan.id}
+
+    except Exception as e:
+        # ৫. যদি কোনো একটি লুপ বা ইনসার্টে এরর হয়, তবে সব কাজ বাতিল (Rollback) হবে
+        db.rollback()
+        
+        # যদি ফাইল সেভ হয়ে থাকে কিন্তু ডাটাবেজ ফেইল করে, তবে ফাইলটি ডিলিট করে দেওয়া ভালো
+        if clean_path and os.path.exists(clean_path):
+            os.remove(clean_path)
+            
+        print(f"Transaction Error: {e}")
+        raise HTTPException(status_code=500, detail="লোন সেভ করতে সমস্যা হয়েছে। ডাটাবেজ রোলব্যাক করা হয়েছে।")
 
 @router.post("/repay-installment/{schedule_id}")
 def repay_loan_installment(
@@ -102,9 +124,10 @@ def repay_loan_installment(
     # ৪. লোন ক্লোজ করার লজিক
     remaining_schedules = db.query(models.ExternalLoanSchedule).filter(
         models.ExternalLoanSchedule.loan_id == loan.id,
-        models.ExternalLoanSchedule.status != "Paid"
+        models.ExternalLoanSchedule.status != "Paid",
+        models.ExternalLoanSchedule.id != schedule.id
     ).count()
-
+    #print(f"remaining_schedules: {remaining_schedules}")
     if remaining_schedules == 0 and loan.remaining_balance <= 0:
         loan.status = "Closed"
 
@@ -158,3 +181,59 @@ def list_pending_installments(db: Session = Depends(get_db)):
         })
 
     return result
+
+from sqlalchemy import func
+from datetime import date, datetime
+
+@router.get("/dashboard-summary")
+def get_liability_dashboard(db: Session = Depends(get_db)):
+    # ১. মোট ঋণের হিসাব (Principal + Interest)
+    total_stats = db.query(
+        func.sum(models.ExternalLoan.total_payable).label("total_debt"),
+        func.sum(models.ExternalLoan.remaining_balance).label("total_remaining")
+    ).first()
+
+    total_debt = total_stats.total_debt or 0
+    total_remaining = total_stats.total_remaining or 0
+    total_paid = total_debt - total_remaining
+
+    # ২. এই মাসের কিস্তির হিসাব
+    today = date.today()
+    first_day_of_month = today.replace(day=1)
+    # পরবর্তী মাসের প্রথম দিন বের করে এই মাসের শেষ দিন নিশ্চিত করা
+    if today.month == 12:
+        last_day_of_month = today.replace(year=today.year + 1, month=1, day=1)
+    else:
+        last_day_of_month = today.replace(month=today.month + 1, day=1)
+
+    this_month_due = db.query(func.sum(models.ExternalLoanSchedule.total_installment - models.ExternalLoanSchedule.paid_amount))\
+        .filter(
+            models.ExternalLoanSchedule.due_date >= first_day_of_month,
+            models.ExternalLoanSchedule.due_date < last_day_of_month,
+            models.ExternalLoanSchedule.status != "Paid"
+        ).scalar() or 0
+
+    # ৩. একটিভ এবং ক্লোজড লোনের লিস্ট
+    active_loans = (db.query(models.ExternalLoan)
+        .options(joinedload(models.ExternalLoan.schedules)) 
+        .filter(models.ExternalLoan.status == "Active")
+        .order_by(models.ExternalLoan.issued_date.desc())
+        .all())
+    closed_loans = (db.query(models.ExternalLoan)
+        .options(joinedload(models.ExternalLoan.schedules))
+        .filter(models.ExternalLoan.status == "Closed")
+        .order_by(models.ExternalLoan.issued_date.desc())
+        .all())
+
+    return {
+        "summary": {
+            "total_debt": total_debt,
+            "total_paid": total_paid,
+            "total_remaining": total_remaining,
+            "this_month_due": this_month_due,
+            "active_count": len(active_loans),
+            "closed_count": len(closed_loans)
+        },
+        "active_loans": active_loans,
+        "closed_loans": closed_loans
+    }

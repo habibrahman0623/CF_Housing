@@ -1,6 +1,6 @@
 import shutil
 import os
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Path, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from app.database import get_db
 from app import models
@@ -27,11 +27,12 @@ async def add_asset(
     db: Session = Depends(get_db)
 ):
     file_path = None
-    
+    clean_path = None
     # যদি ইউজার ফাইল আপলোড করে
     if file:
         file_path = os.path.join(UPLOAD_DIR, f"{date.today()}_{file.filename}")
-        with open(file_path, "wb") as buffer:
+        clean_path = Path(file_path).as_posix()
+        with open(clean_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
 
     # ডাটাবেসে এন্ট্রি
@@ -44,7 +45,7 @@ async def add_asset(
         depreciation_method=depreciation_method,
         useful_life_years=useful_life_years,
         description=description,
-        document_path=file_path,
+        document_path=clean_path,
         current_book_value=amount
     )
     
@@ -56,7 +57,7 @@ async def add_asset(
         "status": "Success",
         "message": "Asset and document saved successfully",
         "asset_id": new_asset.id,
-        "file_stored_at": file_path
+        "file_stored_at": clean_path
     }
 
 from fastapi.responses import FileResponse
@@ -131,12 +132,15 @@ def run_depreciation(db: Session = Depends(get_db)):
         "message": f"Depreciation run completed for {updates_count} assets."
     }    
 
+from datetime import date as date_obj # কনফ্লিক্ট এড়াতে রিনেম করা হলো
+
 @router.post("/record-income")
 async def record_asset_income(
     asset_id: int = Form(...),
     amount: float = Form(...),
-    income_type: str = Form(...), # Rent/Sale/Scrap
+    income_type: str = Form(...),
     description: str = Form(...),
+    income_date: Optional[date_obj] = Form(None), # ইউজার চাইলে তারিখ পাঠাতে পারবে
     file: Optional[UploadFile] = File(None),
     db: Session = Depends(get_db)
 ):
@@ -145,26 +149,35 @@ async def record_asset_income(
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
-    # ফাইল সেভ করার লজিক (আগের মতো)
-    file_path = None
-    if file:
-        # সেভ করার কোড এখানে...
-        pass
+    # যদি ইউজার তারিখ না পাঠায়, তবে আজকের তারিখ সেট হবে
+    final_date = income_date if income_date else date_obj.today()
 
+    # ফাইল সেভ করার লজিক
+    file_path = None
+    clean_path = None
+    if file:
+        INCOME_DIR = "uploads/income"
+        os.makedirs(INCOME_DIR, exist_ok=True)
+        file_path = os.path.join(INCOME_DIR, f"inc_{final_date}_{file.filename}")
+        clean_path = Path(file_path).as_posix()
+        with open(clean_path, "wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+    # ডাটাবেসে এন্ট্রি (আপনার মডেলের কলামের নাম অনুযায়ী 'income_date' বা 'date' ব্যবহার করুন)
     new_income = models.AssetIncome(
         asset_id=asset_id,
         amount=amount,
         income_type=income_type,
         description=description,
-        document_path=file_path
+        document_path=clean_path,
+        income_date=final_date  # এখানে মডেলের সঠিক কলামের নাম দিন
     )
     
-    # যদি সম্পদটি বিক্রি (Sale) করা হয়, তবে অ্যাসেট স্ট্যাটাস আপডেট করা
     if income_type.lower() == "sale":
         asset.is_disposed = True
-        asset.disposal_date = date.today()
+        asset.disposal_date = final_date
         asset.disposal_amount = amount
 
     db.add(new_income)
     db.commit()
-    return {"message": "Asset income recorded successfully"}
+    return {"status": "Success", "message": "Asset income recorded successfully"}

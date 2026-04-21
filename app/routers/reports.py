@@ -7,74 +7,188 @@ from app import models
 from fastapi import APIRouter, Depends, Query, HTTPException
 from typing import Optional
 from datetime import date, datetime, time, timezone
+from app.dependencies import get_current_user
 
 router = APIRouter(prefix="/reports", tags=["Reports & Dashboard"])
 
+
 @router.get("/dashboard-summary")
 def get_dashboard_summary(db: Session = Depends(get_db)):
-    now = datetime.now()
-    today = now.date()
-    current_month = now.month
-    current_year = now.year
-
-    # ১. মেম্বার পরিসংখ্যান
-    active_members = db.query(models.Member).filter(models.Member.status == "Active").count()
+    current_year = datetime.now(timezone.utc).year
+    def get_sums(model, amount_col, date_col, filter_year=None):
+        query = db.query(func.sum(amount_col))
+        if filter_year:
+            query = query.filter(extract('year', date_col) == filter_year)
+        return query.scalar() or 0
     
-    # ২. বকেয়া হিসাব (Monthly + Special)
-    m_stats = db.query(
-        func.sum(models.MonthlyBill.amount - models.MonthlyBill.paid_amount).label("p_due"),
-        func.sum(models.MonthlyBill.fine_amount - models.MonthlyBill.fine_paid_amount).label("f_due")
-    ).first()
+    active_members = db.query(models.Member).filter(models.Member.status == "Active").count()
+    asset_value = get_sums(models.Asset, models.Asset.current_book_value, models.Asset.purchase_date)
+    liability_amount = get_sums(models.ExternalLoan, models.ExternalLoan.remaining_balance, models.ExternalLoan.issued_date)
+    # --- হেল্পার ফাংশন: ফিল্টারসহ সামারি বের করার জন্য ---
+    
 
-    s_stats = db.query(
-        func.sum(models.SpecialBill.amount - models.SpecialBill.paid_amount).label("p_due"),
-        func.sum(models.SpecialBill.fine_amount - models.SpecialBill.fine_paid_amount).label("f_due")
-    ).first()
+    # ==========================
+    # CASH IN (আয় ও আমদানী)
+    # ==========================
+    
+    # ১. মাসিক বিল ও জরিমানা
+    m_all = get_sums(models.MonthlyBill, models.MonthlyBill.paid_amount + models.MonthlyBill.fine_paid_amount, models.MonthlyBill.due_date)
+    m_year = get_sums(models.MonthlyBill, models.MonthlyBill.paid_amount + models.MonthlyBill.fine_paid_amount, models.MonthlyBill.due_date, current_year)
+    
+    # ২. স্পেশাল বিল ও জরিমানা (নতুন যুক্ত)
+    s_all = get_sums(models.SpecialBill, models.SpecialBill.paid_amount + models.SpecialBill.fine_paid_amount, models.SpecialBill.due_date)
+    s_year = get_sums(models.SpecialBill, models.SpecialBill.paid_amount + models.SpecialBill.fine_paid_amount, models.SpecialBill.due_date, current_year)
 
-    # ৩. কালেকশন পরিসংখ্যান (আজ, এই মাস, এই বছর)
-    # আজকের কালেকশন
-    today_col = db.query(func.sum(models.Payment.amount_received)).filter(
-        func.date(models.Payment.payment_date) == today
-    ).scalar() or 0.0
+    # ৩. সম্পদ থেকে আয়
+    a_inc_all = get_sums(models.AssetIncome, models.AssetIncome.amount, models.AssetIncome.income_date)
+    a_inc_year = get_sums(models.AssetIncome, models.AssetIncome.amount, models.AssetIncome.income_date, current_year)
 
-    # এই মাসের কালেকশন
-    month_col = db.query(func.sum(models.Payment.amount_received)).filter(
-        func.extract('month', models.Payment.payment_date) == current_month,
-        func.extract('year', models.Payment.payment_date) == current_year
-    ).scalar() or 0.0
+    # ৪. লোন নেওয়া (Principal Amount)
+    loan_all = get_sums(models.ExternalLoan, models.ExternalLoan.principal_amount, models.ExternalLoan.issued_date)
+    loan_year = get_sums(models.ExternalLoan, models.ExternalLoan.principal_amount, models.ExternalLoan.issued_date, current_year)
 
-    # এই বছরের কালেকশন
-    year_col = db.query(func.sum(models.Payment.amount_received)).filter(
-        func.extract('year', models.Payment.payment_date) == current_year
-    ).scalar() or 0.0
+    # ==========================
+    # CASH OUT (ব্যয় ও বিনিয়োগ)
+    # ==========================
+    
+    # ১. সাধারণ খরচ (Expenses)
+    exp_all = get_sums(models.Expense, models.Expense.amount, models.Expense.expense_date)
+    exp_year = get_sums(models.Expense, models.Expense.amount, models.Expense.expense_date, current_year)
 
-    #সর্বমোট কালেকশন 
-    total_collection = db.query(func.sum(models.Payment.amount_received)).scalar() or 0.0
+    # ২. সম্পদ কেনা (Asset Purchase - Funding Source: General Fund)
+    # যেহেতু সম্পদে created_at ফিল্ড আছে, সেটি দিয়ে বছর ফিল্টার করছি
+    asset_buy_all = db.query(func.sum(models.Asset.purchase_amount)).filter(models.Asset.funding_source == "General Fund").scalar() or 0
+    asset_buy_year = db.query(func.sum(models.Asset.purchase_amount)).filter(
+        models.Asset.funding_source == "General Fund",
+        extract('year', models.Asset.purchase_date) == current_year # purchase_date অনুযায়ী ফিল্টার
+    ).scalar() or 0
 
-    # মোট অ্যাডভান্স ব্যালেন্স যা সমিতির কাছে জমা আছে
-    total_advance = db.query(func.sum(models.Member.advance_balance)).scalar() or 0.0
+    # ৩. লোনের কিস্তি পরিশোধ (কিস্তির টাকা পরিশোধের সময় ক্যাশ আউট হয়)
+    repay_all = get_sums(models.ExternalLoanSchedule, models.ExternalLoanSchedule.paid_amount, models.ExternalLoanSchedule.payment_date)
+    repay_year = get_sums(models.ExternalLoanSchedule, models.ExternalLoanSchedule.paid_amount, models.ExternalLoanSchedule.payment_date, current_year)
 
-    # বকেয়া যোগফল
-    grand_due = (m_stats.p_due or 0) + (m_stats.f_due or 0) + (s_stats.p_due or 0) + (s_stats.f_due or 0)
+    # ==========================
+    # চূড়ান্ত ক্যালকুলেশন
+    # ==========================
+    
+    total_in_all = m_all + s_all + a_inc_all + loan_all
+    total_in_year = m_year + s_year + a_inc_year + loan_year
+    
+    total_out_all = exp_all + asset_buy_all + repay_all
+    total_out_year = exp_year + asset_buy_year + repay_year
 
     return {
-        "member_stats": {
-            "active_members": active_members
+        "current_year": current_year,
+        "active_members": active_members,
+        "asset_value": asset_value,
+        "liability_amount": liability_amount,
+        "lifetime_summary": {
+            "total_cash_in": total_in_all,
+            "total_cash_out": total_out_all,
+            "net_fund_available": total_in_all - total_out_all
         },
-        "collection_summary": {
-            "today": today_col,
-            "this_month": month_col,
-            "this_year": year_col,
-            "total_collection": total_collection,
-            "total_advance_held": total_advance
+        "this_year_summary": {
+            "total_cash_in": total_in_year,
+            "total_cash_out": total_out_year,
+            "net_surplus_deficit": total_in_year - total_out_year
         },
-        "due_summary": {
-            "total_outstanding": grand_due,
-            "monthly_bill_due": (m_stats.p_due or 0),
-            "special_bill_due": (s_stats.p_due or 0),
-            "fine_due": (m_stats.f_due or 0) + (s_stats.f_due or 0)
+        "details_all": {
+            "income": {
+                "monthly_bills": m_all,
+                "special_bills": s_all,
+                "asset_income": a_inc_all,
+                "loans_received": loan_all
+            },
+            "expense": {
+                "general_expenses": exp_all,
+                "asset_investments": asset_buy_all,
+                "loan_repayments": repay_all
+            }
+        },
+
+        "details_this_year": {
+            "income": {
+                "monthly_bills": m_year,
+                "special_bills": s_year,
+                "asset_income": a_inc_year,
+                "loans_received": loan_year
+            },
+            "expense": {
+                "general_expenses": exp_year,
+                "asset_investments": asset_buy_year,
+                "loan_repayments": repay_year
+            }
         }
     }
+
+
+# @router.get("/dashboard-summary")
+# def get_dashboard_summary(db: Session = Depends(get_db)):
+#     now = datetime.now()
+#     today = now.date()
+#     current_month = now.month
+#     current_year = now.year
+
+#     # ১. মেম্বার পরিসংখ্যান
+#     active_members = db.query(models.Member).filter(models.Member.status == "Active").count()
+    
+#     # ২. বকেয়া হিসাব (Monthly + Special)
+#     m_stats = db.query(
+#         func.sum(models.MonthlyBill.amount - models.MonthlyBill.paid_amount).label("p_due"),
+#         func.sum(models.MonthlyBill.fine_amount - models.MonthlyBill.fine_paid_amount).label("f_due")
+#     ).first()
+
+#     s_stats = db.query(
+#         func.sum(models.SpecialBill.amount - models.SpecialBill.paid_amount).label("p_due"),
+#         func.sum(models.SpecialBill.fine_amount - models.SpecialBill.fine_paid_amount).label("f_due")
+#     ).first()
+
+#     # ৩. কালেকশন পরিসংখ্যান (আজ, এই মাস, এই বছর)
+#     # আজকের কালেকশন
+#     today_col = db.query(func.sum(models.Payment.amount_received)).filter(
+#         func.date(models.Payment.payment_date) == today
+#     ).scalar() or 0.0
+
+#     # এই মাসের কালেকশন
+#     month_col = db.query(func.sum(models.Payment.amount_received)).filter(
+#         func.extract('month', models.Payment.payment_date) == current_month,
+#         func.extract('year', models.Payment.payment_date) == current_year
+#     ).scalar() or 0.0
+
+#     # এই বছরের কালেকশন
+#     year_col = db.query(func.sum(models.Payment.amount_received)).filter(
+#         func.extract('year', models.Payment.payment_date) == current_year
+#     ).scalar() or 0.0
+
+#     #সর্বমোট কালেকশন 
+#     total_collection = db.query(func.sum(models.Payment.amount_received)).scalar() or 0.0
+
+#     # মোট অ্যাডভান্স ব্যালেন্স যা সমিতির কাছে জমা আছে
+#     total_advance = db.query(func.sum(models.Member.advance_balance)).scalar() or 0.0
+
+#     # বকেয়া যোগফল
+#     grand_due = (m_stats.p_due or 0) + (m_stats.f_due or 0) + (s_stats.p_due or 0) + (s_stats.f_due or 0)
+
+
+
+#     return {
+#         "member_stats": {
+#             "active_members": active_members
+#         },
+#         "collection_summary": {
+#             "today": today_col,
+#             "this_month": month_col,
+#             "this_year": year_col,
+#             "total_collection": total_collection,
+#             "total_advance_held": total_advance
+#         },
+#         "due_summary": {
+#             "total_outstanding": grand_due,
+#             "monthly_bill_due": (m_stats.p_due or 0),
+#             "special_bill_due": (s_stats.p_due or 0),
+#             "fine_due": (m_stats.f_due or 0) + (s_stats.f_due or 0)
+#         }
+#     }
 
 
 
@@ -224,7 +338,6 @@ def get_defaulter_list_by_special_bill(bill_name: str, db: Session = Depends(get
 
 @router.get("/all-monthly-summary")
 def get_all_monthly_summary(db: Session = Depends(get_db)):
-    # মাস অনুযায়ী গ্রুপ করে সামারি বের করা
     summaries = db.query(
         models.MonthlyBill.billing_period,
         func.sum(models.MonthlyBill.amount).label("total_principal"),
@@ -235,52 +348,69 @@ def get_all_monthly_summary(db: Session = Depends(get_db)):
 
     result = []
     for s in summaries:
-        total_bill = s.total_principal + s.total_fine
-        total_collected = s.principal_collected + s.fine_collected
+        total_bill = (s.total_principal or 0) + (s.total_fine or 0)
+        total_collected = (s.principal_collected or 0) + (s.fine_collected or 0)
+        total_due = total_bill - total_collected # বকেয়া কলাম
         
         result.append({
-            "Month": s.billing_period,
-            "Total Principal Bill": s.total_principal,
-            "Total Principal Bill Collection": s.principal_collected,
-            "Total Fine Exposed": s.total_fine,
-            "Total Fine Collection": s.fine_collected,
-            "Total Bill": total_bill,
-            "Total Collection": total_collected,
-            "Performance": f"{(total_collected / total_bill * 100):.2f}%" if total_bill > 0 else "0%"
+            "month": s.billing_period,
+            "total_bill": total_bill,
+            "total_collected": total_collected,
+            "total_due": total_due,
+            "principal_stats": {
+                "target": s.total_principal,
+                "collected": s.principal_collected
+            },
+            "fine_stats": {
+                "target": s.total_fine,
+                "collected": s.fine_collected
+            },
+            "performance": f"{(total_collected / total_bill * 100):.2f}%" if total_bill > 0 else "0.00%"
         })
     
     return result
 
 @router.get("/all-special-summary")
 def get_all_special_summary(db: Session = Depends(get_db)):
-    # বিলের নাম অনুযায়ী গ্রুপ করা
+    # গ্রুপ বাই করার সময় আমরা max_id নিচ্ছি যাতে লেটেস্ট বিল অনুযায়ী শর্ট করা যায়
     summaries = db.query(
         models.SpecialBill.bill_name,
+        func.max(models.SpecialBill.id).label("latest_id"),
         func.sum(models.SpecialBill.amount).label("total_principal"),
         func.sum(models.SpecialBill.paid_amount).label("principal_collected"),
         func.sum(models.SpecialBill.fine_amount).label("total_fine"),
         func.sum(models.SpecialBill.fine_paid_amount).label("fine_collected")
-    ).group_by(models.SpecialBill.bill_name).all()
+    ).group_by(models.SpecialBill.bill_name).order_by(func.max(models.SpecialBill.id).desc()).all()
 
-    # যেহেতু বিলের নাম স্ট্রিং, তাই আমরা আইডি বা ডেট দিয়ে শর্ট করার জন্য নিচের লিস্টটি ব্যবহার করতে পারি
     result = []
     for s in summaries:
-        total_bill = s.total_principal + s.total_fine
-        total_collected = s.principal_collected + s.fine_collected
-        
+        # Null safety নিশ্চিত করতে 0 ব্যবহার করা
+        t_principal = s.total_principal or 0
+        p_collected = s.principal_collected or 0
+        t_fine = s.total_fine or 0
+        f_collected = s.fine_collected or 0
+
+        total_bill = t_principal + t_fine
+        total_collected = p_collected + f_collected
+        total_due = total_bill - total_collected # বকেয়া কত
+
         result.append({
-            "Special Bill Name": s.bill_name,
-            "Total Principal Bill": s.total_principal,
-            "Total Principal Bill Collection": s.principal_collected,
-            "Total Fine Exposed": s.total_fine,
-            "Total Fine Collection": s.fine_collected,
-            "Total Bill": total_bill,
-            "Total Collection": total_collected,
-            "Performance": f"{(total_collected / total_bill * 100):.2f}%" if total_bill > 0 else "0%"
+            "bill_name": s.bill_name,
+            "total_bill": total_bill,
+            "total_collected": total_collected,
+            "total_due": total_due,
+            "principal_stats": {
+                "target": t_principal,
+                "collected": p_collected
+            },
+            "fine_stats": {
+                "target": t_fine,
+                "collected": f_collected
+            },
+            "performance": f"{(total_collected / total_bill * 100):.2f}%" if total_bill > 0 else "0.00%"
         })
 
-    # লেটেস্টগুলো উপরে রাখার জন্য ডিকশনারি লিস্টটি রিভার্স করা যেতে পারে
-    return result[::-1]
+    return result
 
 @router.get("/monthly-collection-summary")
 def get_monthly_collection_summary(billing_period: str, db: Session = Depends(get_db)):
@@ -333,7 +463,7 @@ def get_special_collection_summary(bill_name: str, db: Session = Depends(get_db)
     }
 
 
-from app.dependencies import get_current_user
+
 
 @router.get("/cash-in-hand")
 def get_cash_in_hand_summary(db: Session = Depends(get_db), current_user: models.User = Depends(get_current_user)):
@@ -408,6 +538,20 @@ def get_cash_in_hand_summary(db: Session = Depends(get_db), current_user: models
             "total_cash_out": total_out_year,
             "net_surplus_deficit": total_in_year - total_out_year
         },
+        "details_all": {
+            "income": {
+                "monthly_bills": m_all,
+                "special_bills": s_all,
+                "asset_income": a_inc_all,
+                "loans_received": loan_all
+            },
+            "expense": {
+                "general_expenses": exp_all,
+                "asset_investments": asset_buy_all,
+                "loan_repayments": repay_all
+            }
+        },
+
         "details_this_year": {
             "income": {
                 "monthly_bills": m_year,
@@ -421,4 +565,42 @@ def get_cash_in_hand_summary(db: Session = Depends(get_db), current_user: models
                 "loan_repayments": repay_year
             }
         }
+    }
+
+@router.get("/expense-history")
+def get_expense_history(
+    start_date: Optional[date] = Query(None), 
+    end_date: Optional[date] = Query(None), 
+    db: Session = Depends(get_db)
+):
+    if not start_date: start_date = date.today()
+    if not end_date: end_date = date.today()
+
+    start_datetime = datetime.combine(start_date, time.min)
+    end_datetime = datetime.combine(end_date, time.max)
+
+    # এক্সপেন্স কুয়েরি
+    expenses = db.query(models.Expense).filter(
+        models.Expense.expense_date >= start_datetime,
+        models.Expense.expense_date <= end_datetime
+    ).order_by(models.Expense.expense_date.desc()).all()
+
+    total_expense = sum(e.amount for e in expenses)
+
+    return {
+        "report_info": {
+            "period": f"{start_date} to {end_date}",
+            "total_transactions": len(expenses),
+            "total_expense": total_expense
+        },
+        "data": [
+            {
+                "id": e.id,
+                "date": e.expense_date.strftime("%Y-%m-%d %I:%M %p"),
+                "category": e.category, # যেমন: অফিস খরচ, যাতায়াত ইত্যাদি
+                "description": e.description,
+                "amount": e.amount
+                
+            } for e in expenses
+        ]
     }

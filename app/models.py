@@ -132,7 +132,8 @@ class Expense(Base):
     __tablename__ = "expenses"
     
     id = Column(Integer, primary_key=True, index=True)
-    category_id = Column(Integer, ForeignKey("expense_categories.id"), nullable=False)
+    #category_id = Column(Integer, ForeignKey("expense_categories.id"), nullable=False)
+    category = Column(String, nullable=False)
     asset_id = Column(Integer, ForeignKey("assets.id"), nullable=True)
     amount = Column(Float, nullable=False)
     
@@ -145,7 +146,7 @@ class Expense(Base):
     payment_method = Column(String, default="Cash")
 
     # Relationships
-    category = relationship("ExpenseCategory")
+    #category = relationship("ExpenseCategory")
     asset = relationship("Asset", back_populates="expenses")
 
 class ExternalLoan(Base):
@@ -165,6 +166,8 @@ class ExternalLoan(Base):
     issued_date = Column(Date)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
 
+    schedules = relationship("ExternalLoanSchedule", back_populates="loan", order_by="ExternalLoanSchedule.due_date.asc()")
+
 class ExternalLoanSchedule(Base):
     __tablename__ = "external_loan_schedules"
 
@@ -179,6 +182,7 @@ class ExternalLoanSchedule(Base):
     payment_date = Column(DateTime, nullable=True) # কিস্তি পরিশোধের প্রকৃত তারিখ
     status = Column(String, default="Pending") # Pending, Paid, Partial    
 
+    loan = relationship("ExternalLoan", back_populates="schedules")
 
 class AssetIncome(Base):
     __tablename__ = "asset_incomes"
