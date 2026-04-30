@@ -269,32 +269,85 @@ def generate_single_special_charge(
     return {"message": f"Special charge '{request.description}' generated for {member.name}"}
 
 # --- মান্থলি বিল ফিল্টারসহ দেখার API ---
+# @router.get("/monthly-bills", response_model=list[schemas.MonthlyBillResponse])
+# def get_monthly_bills(
+#     billing_period: Optional[str] = None, 
+#     status: Optional[str] = None, 
+#     db: Session = Depends(get_db)
+# ):
+#     query = db.query(models.MonthlyBill)
+#     if billing_period:
+#         query = query.filter(models.MonthlyBill.billing_period == billing_period)
+#     if status:
+#         query = query.filter(models.MonthlyBill.status == status)    
+    
+#     return query.all()
+
 @router.get("/monthly-bills", response_model=list[schemas.MonthlyBillResponse])
 def get_monthly_bills(
     billing_period: Optional[str] = None, 
     status: Optional[str] = None, 
     db: Session = Depends(get_db)
 ):
-    query = db.query(models.MonthlyBill)
-    if billing_period:
-        query = query.filter(models.MonthlyBill.billing_period == billing_period)
+    # ১. যদি billing_period না পাঠানো হয়, তবে ডাটাবেজ থেকে লেটেস্ট পিরিয়ডটি খুঁজে বের করা
+    if not billing_period:
+        latest_bill = db.query(models.MonthlyBill)\
+            .order_by(models.MonthlyBill.billing_period.desc())\
+            .first()
+        
+        if latest_bill:
+            billing_period = latest_bill.billing_period
+        else:
+            # যদি কোনো বিলই না থাকে তবে সরাসরি খালি লিস্ট রিটার্ন করা
+            return []
+
+    # ২. মূল কুয়েরি শুরু করা
+    query = db.query(models.MonthlyBill).filter(models.MonthlyBill.billing_period == billing_period)
+    
+    # ৩. স্ট্যাটাস ফিল্টার (যদি থাকে)
     if status:
-        query = query.filter(models.MonthlyBill.status == status)    
+        query = query.filter(models.MonthlyBill.status == status) 
     
     return query.all()
 
 # --- স্পেশাল বিল ফিল্টারসহ দেখার API ---
+# @router.get("/special-bills", response_model=list[schemas.SpecialBillResponse])
+# def get_special_bills(
+#     bill_name: Optional[str] = None,
+#     status: Optional[str] = None, 
+#     db: Session = Depends(get_db)
+# ):
+#     query = db.query(models.SpecialBill)
+#     if bill_name:
+#         query = query.filter(models.SpecialBill.bill_name.ilike(f"%{bill_name}%"))
+#     if status:
+#         query = query.filter(models.SpecialBill.status == status)    
+    
+#     return query.all()
+
 @router.get("/special-bills", response_model=list[schemas.SpecialBillResponse])
 def get_special_bills(
     bill_name: Optional[str] = None,
     status: Optional[str] = None, 
     db: Session = Depends(get_db)
 ):
-    query = db.query(models.SpecialBill)
-    if bill_name:
-        query = query.filter(models.SpecialBill.bill_name.ilike(f"%{bill_name}%"))
+    # ১. যদি bill_name না পাঠানো হয়, তবে লেটেস্ট স্পেশাল বিলের নাম খুঁজে বের করা
+    if not bill_name:
+        latest_special = db.query(models.SpecialBill)\
+            .order_by(models.SpecialBill.id.desc())\
+            .first()
+        
+        if latest_special:
+            bill_name = latest_special.bill_name
+        else:
+            return []
+
+    # ২. মূল কুয়েরি (ilike ব্যবহার করা হয়েছে যাতে বানান ছোট-বড় হাতের হলেও সমস্যা না হয়)
+    query = db.query(models.SpecialBill).filter(models.SpecialBill.bill_name == bill_name)
+    
+    # ৩. স্ট্যাটাস ফিল্টার
     if status:
-        query = query.filter(models.SpecialBill.status == status)    
+        query = query.filter(models.SpecialBill.status == status) 
     
     return query.all()
 

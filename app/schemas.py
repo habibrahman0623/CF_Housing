@@ -75,6 +75,9 @@ class SpecialBillResponse(BaseModel):
     bill_name: str
     description: Optional[str]
     amount: float
+    paid_amount: float
+    fine_amount: float
+    fine_paid_amount: float
     due_date: datetime
     is_paid: bool
     status: Optional[str] 

@@ -29,8 +29,6 @@ class MonthlyBill(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     member_id = Column(Integer, ForeignKey("members.id"))
-    # month = Column(Integer) # ১ থেকে ১২
-    # year = Column(Integer)  # যেমন: ২০২৬
     billing_period = Column(String)
     amount = Column(Float)  # (Share Count * Rate)
     paid_amount = Column(Float, default=0.0) # মেম্বার কত টাকা মূল বিলের বিপরীতে দিয়েছে
